@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card Maker</title>
+<style id="page" media="print">@page { size: A4; margin: 0 }</style>
+<style>
+  /* ---- 画面 ---- */
+  * { box-sizing: border-box }
+  body { margin: 0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; font-size: 14px; color: #222 }
+  .app { display: grid; grid-template-columns: 340px 1fr; height: 100vh }
+  .panel { overflow-y: auto; padding: 16px; border-right: 1px solid #ddd; background: #fafafa }
+  .panel h1 { font-size: 16px; margin: 0 0 12px }
+  .panel h2 { font-size: 12px; color: #666; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .05em }
+  .panel label { display: block; margin-bottom: 8px }
+  .panel label span { display: block; font-size: 12px; color: #555; margin-bottom: 2px }
+  .panel input[type=text], .panel input[type=number], .panel textarea { width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font: inherit }
+  .panel textarea { resize: vertical; min-height: 48px }
+  .row { display: flex; gap: 8px }
+  .row label { flex: 1 }
+  .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px }
+  .actions button { padding: 10px; border: 0; border-radius: 6px; background: #1a73e8; color: #fff; font: inherit; font-weight: 600; cursor: pointer }
+  .actions button.secondary { background: #e0e0e0; color: #222 }
+  #error { color: #c62828; min-height: 1.4em; margin: 8px 0 0 }
+  #info { color: #666; font-size: 12px; margin: 4px 0 0 }
+  .stage { display: grid; place-items: center; background: #e9e9e9; overflow: auto; padding: 24px }
+  .stage .card { box-shadow: 0 4px 24px rgba(0,0,0,.25) }
+
+  /* ---- 名刺 (プレビュー・面付け・入稿で共通) ---- */
+  .card { position: relative; overflow: hidden; font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; line-height: 1.4; --inset: 0mm }
+  .card-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover }
+  .card-body { position: absolute; inset: var(--inset); padding: 5mm 6mm; display: flex; flex-direction: column; justify-content: space-between }
+  .card-org { font-size: .9em; white-space: pre-line }
+  .card-name { font-size: 2em; font-weight: 700 }
+  .card-name .kana { display: block; font-size: .4em; font-weight: 400 }
+  .card-name .title { display: block; font-size: .45em; font-weight: 400 }
+  .card-contact { font-size: .8em; white-space: pre-line }
+
+  /* ---- 印刷 ---- */
+  #print-sheet, #print-bleed { display: none }
+  #print-sheet { position: relative; width: 210mm; height: 297mm; overflow: hidden }
+  #print-sheet .slot { position: absolute }
+  @media print {
+    .app { display: none }
+    body[data-mode=sheet] #print-sheet { display: block }
+    body[data-mode=bleed] #print-bleed { display: block }
+    .card { -webkit-print-color-adjust: exact; print-color-adjust: exact }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <form id="form" class="panel" autocomplete="off">
+    <h1>名刺メーカー</h1>
+
+    <h2>内容</h2>
+    <label><span>会社名</span><input type="text" name="company"></label>
+    <label><span>部署</span><input type="text" name="dept"></label>
+    <label><span>氏名</span><input type="text" name="name"></label>
+    <label><span>ふりがな / ローマ字</span><input type="text" name="kana"></label>
+    <label><span>肩書</span><input type="text" name="title"></label>
+    <label><span>電話</span><input type="text" name="tel"></label>
+    <label><span>メール</span><input type="text" name="email"></label>
+    <label><span>住所</span><textarea name="address"></textarea></label>
+    <label><span>URL</span><input type="text" name="url"></label>
+
+    <h2>デザイン</h2>
+    <div class="row">
+      <label><span>文字色</span><input type="color" name="textColor"></label>
+      <label><span>背景色</span><input type="color" name="bgColor"></label>
+      <label><span>文字サイズ</span><input type="number" name="fontScale" min="0.5" max="2" step="0.1"></label>
+    </div>
+    <label><span>背景画像</span><input type="file" id="bgFile" accept="image/*"></label>
+    <button type="button" id="clearBg" class="secondary">背景画像を消す</button>
+
+    <h2>サイズ (mm)</h2>
+    <div class="row">
+      <label><span>幅</span><input type="number" name="width" min="30" max="210" step="1"></label>
+      <label><span>高さ</span><input type="number" name="height" min="30" max="297" step="1"></label>
+      <label><span>塗り足し</span><input type="number" name="bleed" min="0" max="5" step="1"></label>
+    </div>
+    <p id="error" role="alert"></p>
+    <p id="info"></p>
+
+    <div class="actions">
+      <button type="button" data-mode="sheet">A4 名刺用紙に面付けして印刷</button>
+      <button type="button" data-mode="bleed">入稿用 PDF (塗り足し付き) を保存</button>
+    </div>
+  </form>
+  <div class="stage"><div id="preview"></div></div>
+</div>
+
+<div id="print-sheet"></div>
+<div id="print-bleed"></div>
+
+<script>
+// =====================================================================
+// domain — 純粋。DOM / window に触らない。TS 化時は src/domain/card.ts
+// =====================================================================
+
+/** @typedef {{ ok: true, value: any } | { ok: false, error: any }} Result  TS 化時に neverthrow へ */
+const ok = (value) => ({ ok: true, value });
+const err = (error) => ({ ok: false, error });
+
+/**
+ * @typedef {object} UnvalidatedSpec  フォームの生値。数値項目も文字列で来る
+ * @typedef {UnvalidatedSpec & { kind: 'Validated', width: number, height: number, bleed: number, fontScale: number }} CardSpec
+ * @typedef {{ kind: 'InvalidSize', field: 'width'|'height', value: string }
+ *         | { kind: 'InvalidBleed', value: string }
+ *         | { kind: 'InvalidFontScale', value: string }} SpecError
+ */
+
+const A4 = { width: 210, height: 297 };
+
+const initialSpec = {
+  company: '', dept: '', name: '', kana: '', title: '',
+  tel: '', email: '', address: '', url: '',
+  width: '91', height: '55', bleed: '3',
+  textColor: '#222222', bgColor: '#ffffff', bgImage: null, fontScale: '1',
+};
+
+/** UnvalidatedSpec → Result<CardSpec, SpecError> */
+const validateSpec = (raw) => {
+  const width = Number(raw.width), height = Number(raw.height);
+  const bleed = Number(raw.bleed), fontScale = Number(raw.fontScale);
+  if (!(width >= 30 && width <= A4.width)) return err({ kind: 'InvalidSize', field: 'width', value: raw.width });
+  if (!(height >= 30 && height <= A4.height)) return err({ kind: 'InvalidSize', field: 'height', value: raw.height });
+  if (!(bleed >= 0 && bleed <= 5)) return err({ kind: 'InvalidBleed', value: raw.bleed });
+  if (!(fontScale >= 0.5 && fontScale <= 2)) return err({ kind: 'InvalidFontScale', value: raw.fontScale });
+  return ok({ ...raw, kind: 'Validated', width, height, bleed, fontScale });
+};
+
+/** A4 に何面入るか。91×55 なら 2×5 = 10 面 (市販名刺用紙と同じ) */
+const sheetGrid = ({ width, height }) => {
+  const cols = Math.floor(A4.width / width), rows = Math.floor(A4.height / height);
+  return { cols, rows, marginX: (A4.width - cols * width) / 2, marginY: (A4.height - rows * height) / 2 };
+};
+
+/** 入稿用ページサイズ = 仕上がり + 塗り足し×2 */
+const bleedPage = ({ width, height, bleed }) => ({ width: width + 2 * bleed, height: height + 2 * bleed });
+
+// =====================================================================
+// app — ワークフロー。ports (関数のレコード) を高階関数で受け取る。TS 化時は src/app/*.ts + ports.ts
+// =====================================================================
+
+/**
+ * @typedef {{ load: () => UnvalidatedSpec|null, save: (spec: CardSpec) => void }} SpecStore
+ * @typedef {{ print: (mode: 'sheet'|'bleed', pageSize: string) => void }} Printer
+ * @typedef {{ read: (file: File) => Promise<string> }} ImageReader
+ * @typedef {{ store: SpecStore, printer: Printer, imageReader: ImageReader }} Deps
+ */
+
+const updateSpec = ({ store }) => (current, patch) => {
+  const r = validateSpec({ ...current, ...patch });
+  if (r.ok) store.save(r.value);
+  return r;
+};
+
+const printCard = ({ printer }) => (spec, mode) => {
+  const p = bleedPage(spec);
+  printer.print(mode, mode === 'sheet' ? 'A4' : `${p.width}mm ${p.height}mm`);
+};
+
+const pickImage = ({ imageReader }) => (file) => imageReader.read(file);
+
+// =====================================================================
+// infra — ports の実装。副作用はここだけ。TS 化時は src/infra/*.ts
+// =====================================================================
+
+const localStorageStore = (key) => ({
+  load: () => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } },
+  // ponytail: 背景画像の dataURL 込みで localStorage ~5MB が上限。超えたら IndexedDB に替える
+  save: (spec) => { try { localStorage.setItem(key, JSON.stringify(spec)); } catch (e) { console.warn('save failed', e); } },
+});
+
+const windowPrinter = {
+  print: (mode, pageSize) => {
+    document.body.dataset.mode = mode;
+    document.getElementById('page').textContent = `@page { size: ${pageSize}; margin: 0 }`;
+    window.print();
+  },
+};
+
+const fileReaderImage = {
+  read: (file) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  }),
+};
+
+// =====================================================================
+// ui — 入力の形を集める → usecase → 描画。TS 化時は src/ui/*.tsx (React)
+// =====================================================================
+
+const $ = (sel) => document.querySelector(sel);
+const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** 名刺 1 枚。inset > 0 なら塗り足し込みサイズで描き、文字は inset 分内側へ。TS 化時は <Card> */
+const cardHTML = (spec, inset = 0) => {
+  const e = escapeHtml;
+  const lines = (...xs) => xs.filter(Boolean).map(e).join('\n');
+  return `<div class="card" style="width:${spec.width + 2 * inset}mm;height:${spec.height + 2 * inset}mm;background:${e(spec.bgColor)};color:${e(spec.textColor)};font-size:${3 * spec.fontScale}mm;--inset:${inset}mm">
+    ${spec.bgImage ? `<img class="card-bg" src="${e(spec.bgImage)}" alt="">` : ''}
+    <div class="card-body">
+      <div class="card-org">${lines(spec.company, spec.dept)}</div>
+      <div class="card-name">${spec.kana ? `<span class="kana">${e(spec.kana)}</span>` : ''}${e(spec.name)}${spec.title ? `<span class="title">${e(spec.title)}</span>` : ''}</div>
+      <div class="card-contact">${lines(spec.tel, spec.email, spec.address, spec.url)}</div>
+    </div>
+  </div>`;
+};
+
+/** SpecError の全 kind を網羅する唯一の出口 */
+const errorMessage = (e) => {
+  switch (e.kind) {
+    case 'InvalidSize': return `${e.field === 'width' ? '幅' : '高さ'}は 30〜${e.field === 'width' ? A4.width : A4.height}mm で指定してください (${e.value})`;
+    case 'InvalidBleed': return `塗り足しは 0〜5mm で指定してください (${e.value})`;
+    case 'InvalidFontScale': return `文字サイズは 0.5〜2 で指定してください (${e.value})`;
+    default: return '不明なエラー';
+  }
+};
+
+const render = (spec, error) => {
+  const g = sheetGrid(spec), p = bleedPage(spec);
+  $('#preview').innerHTML = cardHTML(spec);
+  $('#print-sheet').innerHTML = Array.from({ length: g.cols * g.rows }, (_, i) =>
+    `<div class="slot" style="left:${g.marginX + (i % g.cols) * spec.width}mm;top:${g.marginY + Math.floor(i / g.cols) * spec.height}mm">${cardHTML(spec)}</div>`).join('');
+  $('#print-bleed').innerHTML = cardHTML(spec, spec.bleed);
+  $('#error').textContent = error ? errorMessage(error) : '';
+  $('#info').textContent = `面付け: ${g.cols}×${g.rows} = ${g.cols * g.rows} 面 / 入稿ページ: ${p.width}×${p.height} mm`;
+};
+
+const readForm = (form) => Object.fromEntries(new FormData(form));
+
+const fillForm = (form, spec) => {
+  for (const el of form.elements) if (el.name && el.name in spec) el.value = spec[el.name];
+};
+
+const main = (deps) => {
+  const form = $('#form');
+  const loaded = validateSpec({ ...initialSpec, ...(deps.store.load() ?? {}) });
+  let state = loaded.ok ? loaded.value : validateSpec(initialSpec).value;
+
+  const apply = (patch) => {
+    const r = updateSpec(deps)(state, patch);
+    if (r.ok) state = r.value;
+    render(state, r.ok ? null : r.error);
+  };
+
+  fillForm(form, state);
+  render(state, null);
+
+  form.addEventListener('input', (ev) => { if (ev.target.name) apply(readForm(form)); });
+  $('#bgFile').addEventListener('change', (ev) => {
+    const file = ev.target.files[0];
+    if (file) pickImage(deps)(file).then((bgImage) => apply({ bgImage }));
+  });
+  $('#clearBg').addEventListener('click', () => { $('#bgFile').value = ''; apply({ bgImage: null }); });
+  for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => printCard(deps)(state, b.dataset.mode));
+};
+
+// ---- 自己チェック (domain は純粋なので fake 不要)。TS 化時は domain/card.test.ts ----
+{
+  const spec = validateSpec(initialSpec).value;
+  const g = sheetGrid(spec);
+  console.assert(g.cols === 2 && g.rows === 5 && g.marginX === 14 && g.marginY === 11, 'sheetGrid 91x55 → 2x5', g);
+  console.assert(bleedPage(spec).width === 97 && bleedPage(spec).height === 61, 'bleedPage 91x55+3');
+  console.assert(validateSpec({ ...initialSpec, width: '0' }).error?.kind === 'InvalidSize', 'width 0 → InvalidSize');
+  console.assert(validateSpec({ ...initialSpec, bleed: '9' }).error?.kind === 'InvalidBleed', 'bleed 9 → InvalidBleed');
+}
+
+main({ store: localStorageStore('card-maker'), printer: windowPrinter, imageReader: fileReaderImage });
+</script>
+</body>
+</html>
